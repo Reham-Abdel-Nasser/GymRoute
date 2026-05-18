@@ -1,0 +1,36 @@
+@model GymRoute.Presentation.Models.ErrorViewModel
+@{
+    ViewData["Title"] = Model.Title;
+    Layout = "_Layout";
+}
+
+<section class="py-5 text-center">
+    <div class="mb-4">
+        <span class="display-1 fw-bold text-danger">@Model.StatusCode</span>
+    </div>
+    <h1 class="mb-3">@Model.Title</h1>
+    <p class="lead text-muted mb-4">@Model.Message</p>
+
+    @if (Model.ShowDetails && !string.IsNullOrEmpty(Model.ExceptionType))
+    {
+        <div class="alert alert-warning text-start mx-auto" style="max-width: 36rem;">
+            <strong>Development details</strong>
+            <dl class="mb-0 mt-2">
+                <dt>Exception type</dt>
+                <dd><code>@Model.ExceptionType</code></dd>
+            </dl>
+        </div>
+    }
+
+    @if (Model.ShowRequestId)
+    {
+        <p class="small text-muted">
+            Request ID: <code>@Model.RequestId</code>
+        </p>
+    }
+
+    <div class="d-flex gap-3 justify-content-center mt-4">
+        <a asp-controller="Home" asp-action="Index" class="btn btn-primary">Back to home</a>
+        <a asp-controller="Plans" asp-action="Index" class="btn btn-outline-secondary">View plans</a>
+    </div>
+</section>
