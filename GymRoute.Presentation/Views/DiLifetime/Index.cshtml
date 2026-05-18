@@ -1,0 +1,77 @@
+@model GymRoute.Presentation.Diagnostics.DependencyInjection.LifetimeComparisonResult
+@{
+    ViewData["Title"] = "DI Lifetime Demo";
+}
+
+<main class="container py-5">
+    <h1 class="mb-3">Dependency Injection lifetimes</h1>
+    <p class="text-muted">
+        HTTP request <code>@Model.HttpRequestId</code> at @Model.ObservedAtUtc:O (UTC).
+        <strong>Refresh this page</strong> and watch which GUIDs change.
+    </p>
+
+    <div class="alert alert-info">
+        <strong>Constructor injection (this request only)</strong>
+        <ul class="mb-0 mt-2">
+            <li>Transient: <code>@ViewBag.CtorTransientId</code></li>
+            <li>Scoped (1st param): <code>@ViewBag.CtorScopedId</code></li>
+            <li>Scoped (2nd param): <code>@ViewBag.CtorScopedAgainId</code>
+                @(ViewBag.CtorScopedId == ViewBag.CtorScopedAgainId
+                    ? "— same instance (expected for Scoped)"
+                    : "— different instances (unexpected)")</li>
+            <li>Singleton: <code>@ViewBag.CtorSingletonId</code> — stays the same after refresh</li>
+            <li>Comparison service (Scoped): <code>@ViewBag.ComparisonServiceId</code> — new each request</li>
+        </ul>
+    </div>
+</main>
+
+@functions {
+    string RowClass(bool allSame, string lifetime) =>
+        lifetime == "Transient" ? (allSame ? "table-warning" : "table-success")
+        : allSame ? "table-success" : "table-danger";
+}
+
+<section class="container pb-5">
+    <h2 class="h4">Five resolves per lifetime (same request)</h2>
+    @foreach (var obs in new[] { Model.Transient, Model.Scoped, Model.Singleton })
+    {
+        <div class="card mb-3">
+            <div class="card-header @RowClass(obs.AllSameInstance, obs.LifetimeName)">
+                @obs.LifetimeName — @(obs.AllSameInstance ? "reused" : "recreated")
+            </div>
+            <div class="card-body">
+                <p>@obs.Conclusion</p>
+                <ol class="mb-0">
+                    @for (var i = 0; i < obs.ResolvedInstanceIds.Count; i++)
+                    {
+                        <li><code>@obs.ResolvedInstanceIds[i]</code></li>
+                    }
+                </ol>
+            </div>
+        </div>
+    }
+
+    <h2 class="h4 mt-4">N-tier vs ASP.NET Core DI</h2>
+    <table class="table table-bordered">
+        <thead>
+            <tr>
+                <th>Traditional N-tier</th>
+                <th>ASP.NET Core</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>new PlanRepository()</code> in BLL every call</td>
+                <td><strong>Transient</strong> — container creates each time</td>
+            </tr>
+            <tr>
+                <td>One <code>DbContext</code> per web request / unit of work</td>
+                <td><strong>Scoped</strong> — <code>DbContext</code>, <code>IPlanService</code></td>
+            </tr>
+            <tr>
+                <td>Static cache, config read once at startup</td>
+                <td><strong>Singleton</strong> — <code>AuditInterceptor</code>, <code>IConfiguration</code></td>
+            </tr>
+        </tbody>
+    </table>
+</section>
