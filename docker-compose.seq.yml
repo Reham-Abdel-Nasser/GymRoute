@@ -1,0 +1,18 @@
+# Seq log server for local development
+# Run: docker compose -f docker-compose.seq.yml up -d
+# UI:  http://localhost:5341
+
+services:
+  seq:
+    image: datalust/seq:latest
+    container_name: gymroute-seq
+    restart: unless-stopped
+    ports:
+      - "5341:80"
+    environment:
+      ACCEPT_EULA: "Y"
+    volumes:
+      - seq-data:/data
+
+volumes:
+  seq-data:

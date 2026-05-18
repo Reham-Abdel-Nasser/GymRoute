@@ -1,69 +1,79 @@
+using Autofac;
+using Autofac.Extensions.DependencyInjection;
 using GymRoute.DataAccess.Data.Contexts;
 using GymRoute.DataAccess.Data.Seeder;
 using GymRoute.DataAccess.Interceptors;
-using GymRoute.DataAccess.Repositories;
+using GymRoute.DataAccess.Services;
+using GymRoute.Presentation.BackgroundJobs;
+using GymRoute.Presentation.DependencyInjection;
+using GymRoute.Presentation.Infrastructure.ExceptionHandling;
+using GymRoute.Presentation.Infrastructure.Logging;
 using Microsoft.EntityFrameworkCore;
+using Serilog;
 
-var builder = WebApplication.CreateBuilder(args);
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Console()
+    .CreateBootstrapLogger();
 
-// Conventional Middleware => lifetime => Singleton
-// IOC Container: Send objects to DI
-// Inversion of control Container
-
-builder.Services.AddScoped<IPlanRepository, PlanRepository>();
-
-builder.Services.AddSingleton<AuditInterceptor>();
-
-builder.Services.AddDbContext<GymDbContext>((serviceProvider, options) =>
+try
 {
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+    var builder = WebApplication.CreateBuilder(args);
 
-    var auditInterceptor = serviceProvider.GetRequiredService<AuditInterceptor>();
-    options.AddInterceptors(auditInterceptor);
-});
+    builder.Host.UseSerilog((context, services, configuration) => configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .ReadFrom.Services(services)
+        .Enrich.FromLogContext()
+        .Enrich.WithProperty("Application", "GymRoute"));
 
-// builder.Services.AddScoped<IPayment, InstaPay>();
-// builder.Services.AddScoped<IPayment, Visa>(); // the last is executed
+    builder.Host.UseServiceProviderFactory(new AutofacServiceProviderFactory());
+    builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
+    {
+        containerBuilder.RegisterModule<GymAutofacModule>();
+    });
 
-// if use multiple type from any services 
-// Feature => Keyservices
+    builder.Services.AddDbContext<GymDbContext>((serviceProvider, options) =>
+    {
+        options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
 
-builder.Services.AddKeyedScoped<IPlanRepository, PlanRepository>("Plan");
-builder.Services.AddKeyedScoped<IPlanRepository, PlanRepository>("sfsf");
+        var auditInterceptor = serviceProvider.GetRequiredService<AuditInterceptor>();
+        options.AddInterceptors(auditInterceptor);
+    });
 
-// Scoped : For each Request => Only one instance
-// after the request ends => database
+    builder.Services.AddMemoryCache();
+    builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+    builder.Services.AddProblemDetails();
+    builder.Services.AddControllersWithViews();
 
-// Transient => request => 100 => 100 instances
-// after the request ends =>
+    builder.Services.Configure<SoftDeletePurgeOptions>(
+        builder.Configuration.GetSection(SoftDeletePurgeOptions.SectionName));
+    builder.Services.AddScoped<ISoftDeletedRecordsPurgeService, SoftDeletedRecordsPurgeService>();
+    builder.Services.AddHostedService<SoftDeletedRecordsPurgeBackgroundService>();
 
-// Singleton : object for all requests
+    var app = builder.Build();
 
-// Add services to the container.
-builder.Services.AddControllersWithViews();
+    app.UseExceptionHandler();
+    app.UseGymRouteRequestLogging();
 
-var app = builder.Build();
+    app.UseRouting();
+    app.UseAuthorization();
+    app.MapStaticAssets();
+    app.MapControllerRoute(
+        name: "default",
+        pattern: "{controller=Home}/{action=Index}/{id?}")
+        .WithStaticAssets();
 
-// Configure the HTTP request pipeline.
-if (!app.Environment.IsDevelopment())
-{
-    app.UseExceptionHandler("/Home/Error");
+    await using var scope = app.Services.CreateAsyncScope();
+    var dbContext = scope.ServiceProvider.GetRequiredService<GymDbContext>();
+    await DatabaseSeeder.SeedAllAsync(dbContext);
+
+    Log.Information("GymRoute started. Environment={Environment}", app.Environment.EnvironmentName);
+    app.Run();
 }
-app.UseRouting();
-
-app.UseAuthorization();
-
-app.MapStaticAssets();
-
-app.MapControllerRoute(
-    name: "default",
-    pattern: "{controller=Home}/{action=Index}/{id?}")
-    .WithStaticAssets();
-
-await using var scope = app.Services.CreateAsyncScope();
-
-var dbContext = scope.ServiceProvider.GetRequiredService<GymDbContext>();
-
-await DatabaseSeeder.SeedAllAsync(dbContext);
-
-app.Run();
+catch (Exception ex)
+{
+    Log.Fatal(ex, "GymRoute terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
