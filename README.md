@@ -44,6 +44,203 @@ dotnet run --project GymRoute.Presentation
 
 ---
 
+## 1. Software Architecture Styles
+
+### 1. Clean Architecture (research)
+
+**Clean Architecture** (Robert C. Martin) organizes code by **dependency direction**: inner layers define rules; outer layers implement details.
+
+```
+┌─────────────────────────────────────┐
+│  Presentation (MVC, API)          │
+├─────────────────────────────────────┤
+│  Application (use cases, services)  │
+├─────────────────────────────────────┤
+│  Domain (entities, business rules)  │
+├─────────────────────────────────────┤
+│  Infrastructure (EF, files, email)  │
+└─────────────────────────────────────┘
+         dependencies point inward →
+```
+
+| Layer | Responsibility |
+|-------|----------------|
+| **Domain** | Entities, value objects, domain events — no EF, no HTTP |
+| **Application** | Use cases, interfaces (`IPlanService`), orchestration |
+| **Infrastructure** | EF Core, repositories, external APIs |
+| **Presentation** | Controllers, views, DI composition root |
+
+**Key rule:** Domain and Application do not reference Infrastructure or Presentation.
+
+**GymRoute today:** Partial clean style — `BusinessLogic` + `DataAccess` + `Presentation`, with `IGymDbContext` as an application boundary. A full clean layout would move entities to a `Domain` project and invert the `BusinessLogic` → `DataAccess` reference.
+
+---
+
+### 2. Vertical Slice Architecture (research)
+
+**Vertical Slice Architecture** organizes code by **feature/use case**, not by technical layer.
+
+```
+Features/
+  Plans/
+    CreatePlan.cs      (command + handler + validation)
+    GetActivePlans.cs
+    PlanEndpoint.cs
+  Members/
+    RegisterMember.cs
+```
+
+Each slice owns everything needed for one capability: request model, handler, validation, persistence, and mapping.
+
+| Idea | Benefit |
+|------|---------|
+| Feature folders | Change one feature without touching unrelated layers |
+| MediatR-style handlers | Thin controllers, one class per use case |
+| Co-located code | Less jumping between `Controllers/`, `Services/`, `Repositories/` |
+
+**GymRoute today:** Layered (N-tier style). A vertical slice version might use `Features/Plans/GetActivePlans/` instead of separate `PlansController` + `PlanService`.
+
+---
+
+### 3. N-Tier Architecture (research)
+
+**N-Tier** splits an application into **horizontal layers**, usually deployed together but logically separated.
+
+Classic 3-tier:
+
+```
+Presentation  →  Business Logic  →  Data Access  →  Database
+   (MVC)            (services)         (EF/repos)
+```
+
+| Tier | ASP.NET Core equivalent |
+|------|-------------------------|
+| Presentation | `GymRoute.Presentation` |
+| Business | `GymRoute.BusinessLogic` |
+| Data | `GymRoute.DataAccess` |
+
+**Characteristics:** Easy to learn, matches many enterprise .NET courses, teams know where code goes. Risk: “smart UI” or “anemic domain” if all logic sits in services with little domain modeling.
+
+**GymRoute** is a **3-tier MVC** application — the most common starting point for line-of-business apps.
+
+---
+
+### 4. N-Tier vs Clean vs Vertical Slice
+
+| Aspect | N-Tier | Clean Architecture | Vertical Slice |
+|--------|--------|-------------------|----------------|
+| **Organized by** | Technical layer | Dependency rings + layers | Feature / use case |
+| **Main goal** | Separation of concerns | Independence from frameworks | Isolate change per feature |
+| **Typical folders** | `Controllers`, `Services`, `Data` | `Domain`, `Application`, `Infrastructure` | `Features/Plans/...` |
+| **Adding a feature** | Touch 3+ projects/layers | Touch Application + maybe Infrastructure | Add one slice folder |
+| **Learning curve** | Low | Medium–high | Medium |
+| **Best for** | CRUD apps, teams new to .NET | Long-lived domains, complex rules | Medium/large apps with many features |
+| **EF / MVC location** | Data + Presentation tiers | Infrastructure + Presentation | Inside each slice’s infrastructure |
+
+**Relationship:** Vertical Slice and Clean are not opposites — you can combine **vertical slices inside** clean application boundaries.
+
+---
+
+### 5. Monolithic vs Microservices (research)
+
+| | **Monolithic** | **Microservices** |
+|---|----------------|-------------------|
+| **Deployment** | One deployable unit (one API/site) | Many small services, each deployable |
+| **Codebase** | Usually one solution | Multiple repos or many projects |
+| **Database** | Often one database | Database per service (ideal) |
+| **Communication** | In-process method calls | HTTP, gRPC, messaging |
+| **Scaling** | Scale entire app | Scale individual services |
+| **Examples** | Single ASP.NET Core MVC app | Orders API + Members API + Notifications worker |
+
+**Monolithic** does not mean “bad” — it means **one bounded deployable** that contains UI, business logic, and data access.
+
+**Microservices** trade operational complexity (network, versioning, distributed tracing) for independent scaling and team autonomy.
+
+---
+
+### 6. Modular Monolithic vs Microservices
+
+| Aspect | **Modular Monolithic** | **Microservices** |
+|--------|------------------------|-------------------|
+| **Deploy units** | One | Many |
+| **Module boundaries** | Projects/folders with clear interfaces | Separate services |
+| **Refactoring** | Easier — rename/move in one solution | Requires contracts, versioning |
+| **Transactions** | Single database, ACID | Distributed transactions / sagas |
+| **Ops** | One host, one log pipeline | Service mesh, multiple pipelines |
+| **Team structure** | One team or feature teams in one repo | Team per service |
+
+**Modular monolith:** One application, but **enforced module boundaries** (e.g. `Modules.Plans`, `Modules.Members` with no cross-module `DbSet` access). Prepares you to extract a module into a service later without starting as microservices.
+
+**GymRoute** is a **monolith** (single MVC app). It can evolve toward **modular monolith** by grouping `Plans`, `Members`, `Bookings` into isolated modules with explicit public APIs.
+
+---
+
+### 7. Advantages, disadvantages, and when to use each
+
+#### N-Tier
+
+| | |
+|---|---|
+| **Advantages** | Simple mental model; fast onboarding; works well with MVC + EF; easy to debug in one process |
+| **Disadvantages** | Features spread across layers; risk of tight coupling to EF in “business” tier; large solutions become hard to navigate |
+| **Use when** | CRUD/internal tools, coursework, small–medium LOB apps, team prefers layers |
+| **Overengineering when** | Only 2–3 screens and you add 5 projects + abstractions for every entity |
+
+#### Clean Architecture
+
+| | |
+|---|---|
+| **Advantages** | Testable domain; swappable infrastructure; survives framework changes |
+| **Disadvantages** | More projects and interfaces; slower early development; easy to create “interface soup” |
+| **Use when** | Complex business rules, long product lifetime, multiple entry points (API + MVC + jobs) |
+| **Overengineering when** | Simple CRUD with no domain rules but full Domain/Application/Infrastructure for every table |
+
+#### Vertical Slice
+
+| | |
+|---|---|
+| **Advantages** | Feature cohesion; easier to delete/replace a feature; scales well with team size |
+| **Disadvantages** | Shared infrastructure duplicated without discipline; needs conventions (MediatR, validation pipeline) |
+| **Use when** | Many features, frequent changes per area, API-heavy or CQRS-style apps |
+| **Overengineering when** | One controller and one service — a full slice folder per trivial endpoint |
+
+#### Monolithic (including modular monolith)
+
+| | |
+|---|---|
+| **Advantages** | Simple deploy; one transaction boundary; lower ops cost; easier local dev |
+| **Disadvantages** | Entire app scales together; one bug can affect all features; build times grow |
+| **Use when** | Startups, MVPs, internal apps, small teams (~10 or fewer developers), unclear domain boundaries |
+| **Overengineering when** | N/A for starting — monolith is usually the **default first choice** |
+
+#### Microservices
+
+| | |
+|---|---|
+| **Advantages** | Independent deploy/scale; technology mix per service; team ownership |
+| **Disadvantages** | Distributed failures; data consistency; DevOps overhead; harder debugging |
+| **Use when** | Clear bounded contexts, large teams, different scale/load per domain, need independent release cycles |
+| **Overengineering when** | Single small team, one database, no scale problems — “microservices because Netflix” |
+
+---
+
+### Architecture decision guide (quick reference)
+
+```mermaid
+flowchart TD
+    A[New ASP.NET Core app] --> B{Team size and complexity?}
+    B -->|Small / learning / CRUD| C[N-Tier or Modular Monolith]
+    B -->|Rich domain rules| D[Clean Architecture]
+    B -->|Many features, frequent changes| E[Vertical Slices inside monolith]
+    C --> F{Scale or org pressure?}
+    F -->|No| G[Stay monolith]
+    F -->|Yes, clear boundaries| H[Extract modules → microservices gradually]
+```
+
+**Practical path for GymRoute-sized apps:** Start as **N-tier monolith** (current) → introduce **module boundaries** → adopt **vertical slices** for new features → extract **microservices** only when a module has clear independent scaling or team ownership needs.
+
+---
+
 ## 2. Repository Pattern & EF Core
 
 ### 8. Repository Pattern (research)
