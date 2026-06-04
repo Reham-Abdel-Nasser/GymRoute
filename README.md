@@ -1,0 +1,697 @@
+# GymRoute
+
+ASP.NET Core MVC gym management application demonstrating **EF Core**, **DbContext abstractions**, **Dependency Injection**, **SOLID**, **Autofac**, **exception handling**, **background jobs**, and **Serilog + Seq**.
+
+## Requirements checklist
+
+| # | Requirement | Status |
+|---|-------------|--------|
+| 1 | Clean code | Implemented — layered services, no dead tutorial comments |
+| 2 | Meaningful naming | `IGymDbContext`, `GlobalExceptionHandler`, `SoftDeletedRecordsPurgeService`, etc. |
+| 3 | Practical implementations in Gym MVC | All features wired in `GymRoute.Presentation` |
+| 4 | Comments only when necessary | Non-obvious types only (e.g. adapter, exception handler) |
+| 5 | Features committed properly | Feature commits on `feature/gym-Reham` |
+| 6 | Pull Request + working build | See [Delivery](#delivery) |
+
+## Delivery
+
+1. **Build:** `dotnet build GymRoute.Presentation`
+2. **Run:** `dotnet run --project GymRoute.Presentation`
+3. **Seq (optional):** `docker compose -f docker-compose.seq.yml up -d`
+4. **Pull Request:** open from `feature/gym-Reham` → `master`
+
+## Projects
+
+| Project | Role |
+|---------|------|
+| `GymRoute.Presentation` | MVC UI, `Program.cs`, Autofac, DI lifetime demo |
+| `GymRoute.BusinessLogic` | Services, `IGymDbContext`, `IPlanService` |
+| `GymRoute.DataAccess` | EF Core `GymDbContext`, entities, interceptors, migrations |
+
+## Run
+
+```bash
+dotnet run --project GymRoute.Presentation
+```
+
+| Demo | URL |
+|------|-----|
+| Plans | `/Plans` |
+| DI lifetimes (Guid per instance) | `/DiLifetime` |
+| Trigger 500 error (demo) | `/Home/ThrowTest` |
+| Trigger 404 error (demo) | `/Home/ThrowNotFound` |
+| Error page (after redirect) | `/Home/Error` |
+
+---
+
+## 1. Software Architecture Styles
+
+### 1. Clean Architecture (research)
+
+**Clean Architecture** (Robert C. Martin) organizes code by **dependency direction**: inner layers define rules; outer layers implement details.
+
+```
+┌─────────────────────────────────────┐
+│  Presentation (MVC, API)          │
+├─────────────────────────────────────┤
+│  Application (use cases, services)  │
+├─────────────────────────────────────┤
+│  Domain (entities, business rules)  │
+├─────────────────────────────────────┤
+│  Infrastructure (EF, files, email)  │
+└─────────────────────────────────────┘
+         dependencies point inward →
+```
+
+| Layer | Responsibility |
+|-------|----------------|
+| **Domain** | Entities, value objects, domain events — no EF, no HTTP |
+| **Application** | Use cases, interfaces (`IPlanService`), orchestration |
+| **Infrastructure** | EF Core, repositories, external APIs |
+| **Presentation** | Controllers, views, DI composition root |
+
+**Key rule:** Domain and Application do not reference Infrastructure or Presentation.
+
+**GymRoute today:** Partial clean style — `BusinessLogic` + `DataAccess` + `Presentation`, with `IGymDbContext` as an application boundary. A full clean layout would move entities to a `Domain` project and invert the `BusinessLogic` → `DataAccess` reference.
+
+---
+
+### 2. Vertical Slice Architecture (research)
+
+**Vertical Slice Architecture** organizes code by **feature/use case**, not by technical layer.
+
+```
+Features/
+  Plans/
+    CreatePlan.cs      (command + handler + validation)
+    GetActivePlans.cs
+    PlanEndpoint.cs
+  Members/
+    RegisterMember.cs
+```
+
+Each slice owns everything needed for one capability: request model, handler, validation, persistence, and mapping.
+
+| Idea | Benefit |
+|------|---------|
+| Feature folders | Change one feature without touching unrelated layers |
+| MediatR-style handlers | Thin controllers, one class per use case |
+| Co-located code | Less jumping between `Controllers/`, `Services/`, `Repositories/` |
+
+**GymRoute today:** Layered (N-tier style). A vertical slice version might use `Features/Plans/GetActivePlans/` instead of separate `PlansController` + `PlanService`.
+
+---
+
+### 3. N-Tier Architecture (research)
+
+**N-Tier** splits an application into **horizontal layers**, usually deployed together but logically separated.
+
+Classic 3-tier:
+
+```
+Presentation  →  Business Logic  →  Data Access  →  Database
+   (MVC)            (services)         (EF/repos)
+```
+
+| Tier | ASP.NET Core equivalent |
+|------|-------------------------|
+| Presentation | `GymRoute.Presentation` |
+| Business | `GymRoute.BusinessLogic` |
+| Data | `GymRoute.DataAccess` |
+
+**Characteristics:** Easy to learn, matches many enterprise .NET courses, teams know where code goes. Risk: “smart UI” or “anemic domain” if all logic sits in services with little domain modeling.
+
+**GymRoute** is a **3-tier MVC** application — the most common starting point for line-of-business apps.
+
+---
+
+### 4. N-Tier vs Clean vs Vertical Slice
+
+| Aspect | N-Tier | Clean Architecture | Vertical Slice |
+|--------|--------|-------------------|----------------|
+| **Organized by** | Technical layer | Dependency rings + layers | Feature / use case |
+| **Main goal** | Separation of concerns | Independence from frameworks | Isolate change per feature |
+| **Typical folders** | `Controllers`, `Services`, `Data` | `Domain`, `Application`, `Infrastructure` | `Features/Plans/...` |
+| **Adding a feature** | Touch 3+ projects/layers | Touch Application + maybe Infrastructure | Add one slice folder |
+| **Learning curve** | Low | Medium–high | Medium |
+| **Best for** | CRUD apps, teams new to .NET | Long-lived domains, complex rules | Medium/large apps with many features |
+| **EF / MVC location** | Data + Presentation tiers | Infrastructure + Presentation | Inside each slice’s infrastructure |
+
+**Relationship:** Vertical Slice and Clean are not opposites — you can combine **vertical slices inside** clean application boundaries.
+
+---
+
+### 5. Monolithic vs Microservices (research)
+
+| | **Monolithic** | **Microservices** |
+|---|----------------|-------------------|
+| **Deployment** | One deployable unit (one API/site) | Many small services, each deployable |
+| **Codebase** | Usually one solution | Multiple repos or many projects |
+| **Database** | Often one database | Database per service (ideal) |
+| **Communication** | In-process method calls | HTTP, gRPC, messaging |
+| **Scaling** | Scale entire app | Scale individual services |
+| **Examples** | Single ASP.NET Core MVC app | Orders API + Members API + Notifications worker |
+
+**Monolithic** does not mean “bad” — it means **one bounded deployable** that contains UI, business logic, and data access.
+
+**Microservices** trade operational complexity (network, versioning, distributed tracing) for independent scaling and team autonomy.
+
+---
+
+### 6. Modular Monolithic vs Microservices
+
+| Aspect | **Modular Monolithic** | **Microservices** |
+|--------|------------------------|-------------------|
+| **Deploy units** | One | Many |
+| **Module boundaries** | Projects/folders with clear interfaces | Separate services |
+| **Refactoring** | Easier — rename/move in one solution | Requires contracts, versioning |
+| **Transactions** | Single database, ACID | Distributed transactions / sagas |
+| **Ops** | One host, one log pipeline | Service mesh, multiple pipelines |
+| **Team structure** | One team or feature teams in one repo | Team per service |
+
+**Modular monolith:** One application, but **enforced module boundaries** (e.g. `Modules.Plans`, `Modules.Members` with no cross-module `DbSet` access). Prepares you to extract a module into a service later without starting as microservices.
+
+**GymRoute** is a **monolith** (single MVC app). It can evolve toward **modular monolith** by grouping `Plans`, `Members`, `Bookings` into isolated modules with explicit public APIs.
+
+---
+
+### 7. Advantages, disadvantages, and when to use each
+
+#### N-Tier
+
+| | |
+|---|---|
+| **Advantages** | Simple mental model; fast onboarding; works well with MVC + EF; easy to debug in one process |
+| **Disadvantages** | Features spread across layers; risk of tight coupling to EF in “business” tier; large solutions become hard to navigate |
+| **Use when** | CRUD/internal tools, coursework, small–medium LOB apps, team prefers layers |
+| **Overengineering when** | Only 2–3 screens and you add 5 projects + abstractions for every entity |
+
+#### Clean Architecture
+
+| | |
+|---|---|
+| **Advantages** | Testable domain; swappable infrastructure; survives framework changes |
+| **Disadvantages** | More projects and interfaces; slower early development; easy to create “interface soup” |
+| **Use when** | Complex business rules, long product lifetime, multiple entry points (API + MVC + jobs) |
+| **Overengineering when** | Simple CRUD with no domain rules but full Domain/Application/Infrastructure for every table |
+
+#### Vertical Slice
+
+| | |
+|---|---|
+| **Advantages** | Feature cohesion; easier to delete/replace a feature; scales well with team size |
+| **Disadvantages** | Shared infrastructure duplicated without discipline; needs conventions (MediatR, validation pipeline) |
+| **Use when** | Many features, frequent changes per area, API-heavy or CQRS-style apps |
+| **Overengineering when** | One controller and one service — a full slice folder per trivial endpoint |
+
+#### Monolithic (including modular monolith)
+
+| | |
+|---|---|
+| **Advantages** | Simple deploy; one transaction boundary; lower ops cost; easier local dev |
+| **Disadvantages** | Entire app scales together; one bug can affect all features; build times grow |
+| **Use when** | Startups, MVPs, internal apps, small teams (~10 or fewer developers), unclear domain boundaries |
+| **Overengineering when** | N/A for starting — monolith is usually the **default first choice** |
+
+#### Microservices
+
+| | |
+|---|---|
+| **Advantages** | Independent deploy/scale; technology mix per service; team ownership |
+| **Disadvantages** | Distributed failures; data consistency; DevOps overhead; harder debugging |
+| **Use when** | Clear bounded contexts, large teams, different scale/load per domain, need independent release cycles |
+| **Overengineering when** | Single small team, one database, no scale problems — “microservices because Netflix” |
+
+---
+
+### Architecture decision guide (quick reference)
+
+```mermaid
+flowchart TD
+    A[New ASP.NET Core app] --> B{Team size and complexity?}
+    B -->|Small / learning / CRUD| C[N-Tier or Modular Monolith]
+    B -->|Rich domain rules| D[Clean Architecture]
+    B -->|Many features, frequent changes| E[Vertical Slices inside monolith]
+    C --> F{Scale or org pressure?}
+    F -->|No| G[Stay monolith]
+    F -->|Yes, clear boundaries| H[Extract modules → microservices gradually]
+```
+
+**Practical path for GymRoute-sized apps:** Start as **N-tier monolith** (current) → introduce **module boundaries** → adopt **vertical slices** for new features → extract **microservices** only when a module has clear independent scaling or team ownership needs.
+
+---
+
+## 2. Repository Pattern & EF Core
+
+### 8. Repository Pattern (research)
+
+The **Repository Pattern** (from Domain-Driven Design) hides data access behind an interface so application code talks to repositories, not SQL or EF directly.
+
+| Concept | Role |
+|---------|------|
+| **Repository** | Collection-like API per aggregate (`GetById`, `Add`, `List`, …) |
+| **Unit of Work** | Tracks changes across repositories and commits one transaction |
+| **Goal** | Swap persistence, test without a DB, keep domain free of EF types |
+
+Classic flow:
+
+```
+Controller/Service → IPlanRepository → PlanRepository → DbContext → Database
+```
+
+### 9. Why teams avoid Repository with EF Core
+
+| Reason | Explanation |
+|--------|-------------|
+| **Thin wrappers** | `GetAllAsync()` → `db.Plans.ToListAsync()` adds little value |
+| **Leaky abstraction** | Real apps need `Include`, `Where`, projections — repos grow huge or callers need `IQueryable` |
+| **EF Core is already an abstraction** | `DbSet<T>` + LINQ already hide SQL |
+| **Harder testing** | Mocking repositories is often harder than in-memory `DbContext` or Testcontainers |
+| **Double Unit of Work** | Repo + `DbContext` both expose `SaveChanges`; easy to save in the wrong layer |
+| **Maintenance** | Every new entity → new interface + class + DI registration |
+
+Repositories still make sense when you truly swap storage, enforce strict aggregate boundaries, or your team standardizes on them. With EF Core, many teams use **`DbContext` (or an interface over it)** instead.
+
+### 10. DbContext as Repository + Unit of Work
+
+#### As Repository
+
+Each `DbSet<T>` is a typed collection:
+
+| Repository idea | EF Core equivalent |
+|-----------------|-------------------|
+| `GetById` | `FindAsync` / `FirstOrDefaultAsync` |
+| `GetAll` | `ToListAsync()` |
+| `Add` | `Add` / `AddAsync` |
+| `Delete` | `Remove` |
+| Custom queries | LINQ on `DbSet` |
+
+`GymDbContext` exposes: `Plans`, `Categories`, `Users`, `Sessions`, `MemberShips`, `Bookings`, `HealthRecords`.
+
+#### As Unit of Work
+
+One `DbContext` per scope (typically per HTTP request):
+
+- Tracks all entity changes in one change tracker
+- `SaveChangesAsync()` commits in **one transaction**
+- `AuditInterceptor` runs on that single save
+
+### 11. Interface for DbContext without repositories
+
+Expose what upper layers need: `DbSet` properties + `SaveChangesAsync`. Services depend on **`IGymDbContext`**, not `GymDbContext` or `IPlanRepository`.
+
+**DI registration** (via Autofac module):
+
+```csharp
+builder.RegisterType<GymDbContextAdapter>()
+    .As<IGymDbContext>()
+    .InstancePerLifetimeScope();
+```
+
+**Why `GymDbContextAdapter`?**  
+`BusinessLogic` references `DataAccess`. If `GymDbContext` implemented `IGymDbContext` inside `DataAccess`, that project would reference `BusinessLogic` → **circular dependency**. The adapter forwards to `GymDbContext` and keeps layers acyclic.
+
+**Alternative (clean architecture):** put `IGymDbContext` in a Core/Application project; `DataAccess` references it and `GymDbContext : DbContext, IGymDbContext` with no adapter.
+
+### 12. Practical examples in this repo
+
+| Approach | Types | Location |
+|----------|-------|----------|
+| **DbContext interface** | `IGymDbContext` → `GymDbContextAdapter` → `GymDbContext` | `GymRoute.BusinessLogic` |
+| **Service (no repository)** | `IPlanService` → `PlanService` | `GymRoute.BusinessLogic/Services` |
+| **Cross-aggregate query** | `MemberService` uses `db.Users.OfType<Member>()` | `GymRoute.BusinessLogic/Services` |
+
+```
+Repository:     Controller → IPlanRepository → PlanRepository → GymDbContext
+DbContext IF:   Controller → IPlanService    → IGymDbContext  → GymDbContext
+```
+
+---
+
+## 3. Dependency Injection
+
+### 13. Dependency Injection in ASP.NET Core
+
+**Dependency Injection (DI)** means classes declare what they need (constructor parameters); the **IoC container** in `Program.cs` / Autofac creates objects and wires dependencies.
+
+| Traditional N-tier | ASP.NET Core DI |
+|--------------------|-----------------|
+| BLL does `new DataAccessLayer()` | `AddScoped<IPlanService, PlanService>()` or Autofac `RegisterType` |
+| You choose lifetime manually | Container applies **Transient / Scoped / Singleton** |
+| Hard to test (concrete `new`) | Inject interfaces; swap in tests |
+
+### 14. Service lifetimes
+
+| Lifetime | Created | Disposed | Typical use in GymRoute |
+|----------|---------|----------|-------------------------|
+| **Transient** | Every resolve | GC | Lightweight, stateless helpers |
+| **Scoped** | Once per scope (HTTP request) | End of request | `DbContext`, `IPlanService`, `IGymDbContext` |
+| **Singleton** | Once per application | App shutdown | `AuditInterceptor`, `IConfiguration` |
+
+**Rules of thumb**
+
+- **DbContext must be Scoped** — never Singleton (not thread-safe, stale data).
+- **Do not inject Scoped into Singleton** (captive dependency).
+
+| Built-in DI | Autofac equivalent |
+|-------------|-------------------|
+| `AddTransient<T>()` | `.InstancePerDependency()` |
+| `AddScoped<T>()` | `.InstancePerLifetimeScope()` |
+| `AddSingleton<T>()` | `.SingleInstance()` |
+
+### 15–16. Lifetime demo (Guid proves reuse vs recreation)
+
+Open **`/DiLifetime`** and refresh the page.
+
+Each tracked service gets `Guid InstanceId` at construction. `LifetimeComparisonService` resolves each type **five times** in one request.
+
+| Observation | Transient | Scoped | Singleton |
+|-------------|-----------|--------|-----------|
+| 5 resolves in **same request** | 5 different GUIDs | 5 same GUID | 5 same GUID |
+| **Refresh** page (new request) | New GUIDs | New scoped GUID | **Same** singleton GUID |
+| Two scoped ctor parameters | — | Same GUID | — |
+
+**Files:** `GymRoute.Presentation/Diagnostics/DependencyInjection/`
+
+---
+
+## 4. SOLID Principles
+
+### 17. SOLID — research summary
+
+| Letter | Principle | One-line idea |
+|--------|-----------|---------------|
+| **S** | Single Responsibility | One class → one job |
+| **O** | Open/Closed | Extend behavior without editing existing code |
+| **L** | Liskov Substitution | Subtypes must honor the base type’s contract |
+| **I** | Interface Segregation | Small interfaces; no unused methods |
+| **D** | Dependency Inversion | Depend on abstractions, not concrete types |
+
+### 18. Each principle with ASP.NET Core examples
+
+#### S — Single Responsibility Principle
+
+A class should have only **one reason to change**.
+
+| Layer | Responsibility | GymRoute example |
+|-------|----------------|------------------|
+| Controller | HTTP, routing, status codes | `PlansController` |
+| Service | Business rules | `PlanService` |
+| Interceptor | Cross-cutting persistence | `AuditInterceptor` |
+
+**Violation:** one controller action that validates, queries EF, sends email, and writes files.
+
+#### O — Open/Closed Principle
+
+Open for **extension**, closed for **modification**.
+
+- Add `AuditInterceptor` instead of editing every `SaveChanges` call.
+- Add `IPayment` implementations (`InstaPay`, `Visa`) without changing checkout service.
+
+```csharp
+public class CheckoutService(IPayment payment) { ... }
+builder.Services.AddScoped<IPayment, InstaPay>();
+```
+
+#### L — Liskov Substitution Principle
+
+If `B` inherits `A`, use `B` anywhere you use `A` without surprises.
+
+`Member` and `Trainer` extend `User`. Code on `User` works with `Member`; use `OfType<Member>()` for member-specific behavior.
+
+**Violation:** subclass that throws on operations the base type guarantees (e.g. `Save()` not supported).
+
+#### I — Interface Segregation Principle
+
+Clients should not depend on methods they do not use.
+
+`IPlanService` exposes only plan operations — not bookings, members, newsletters.
+
+`IGymDbContext` is wider (many `DbSet`s); stricter ISP would split into `IPlanStore`, `IBookingStore`, etc.
+
+#### D — Dependency Inversion Principle
+
+High-level modules depend on **abstractions**, not `GymDbContext` or `new Concrete()`.
+
+```
+PlansController → IPlanService → IGymDbContext → GymDbContextAdapter → GymDbContext
+```
+
+### N-tier vs SOLID + ASP.NET Core
+
+| Traditional N-tier | SOLID + ASP.NET Core |
+|--------------------|----------------------|
+| UI calls BLL, BLL `new`s DAL | **DIP** — inject `IPlanService`, `IGymDbContext` |
+| One big “Manager” class | **SRP** — separate controller, service, interceptor |
+| Edit switch per payment type | **OCP** — new `IPayment` implementation |
+| Subclass Member/Trainer | **LSP** — honor `User` contract |
+| One huge `IDataAccess` | **ISP** — focused interfaces |
+
+---
+
+## 5. Autofac
+
+### 19. Autofac — research summary
+
+**Autofac** is a mature **IoC container** for .NET. In ASP.NET Core you use **`Autofac.Extensions.DependencyInjection`**, which plugs in via `AutofacServiceProviderFactory` while still using `builder.Services` for framework setup (MVC, EF Core).
+
+### 20. Built-in DI vs Autofac
+
+| Topic | Built-in ASP.NET Core DI | Autofac |
+|--------|---------------------------|---------|
+| **Shipped with** | Framework | NuGet package |
+| **Configuration** | `builder.Services.AddScoped<...>()` | `ContainerBuilder` + `Module` |
+| **Modules** | No first-class modules | `Module` classes per feature/layer |
+| **Advanced** | Keyed services (.NET 8+) | Decorators, assembly scanning, named/keyed, child scopes |
+| **Learning curve** | Low | Higher |
+
+Calls to `builder.Services.Add...()` are merged into the Autofac container at startup.
+
+### 21. When teams use Autofac
+
+| Scenario | Why |
+|----------|-----|
+| Large solutions | `Module` per project keeps registration maintainable |
+| Assembly scanning | `RegisterAssemblyTypes` registers many types at once |
+| Decorators | Wrap services with logging/caching without changing implementations |
+| Named / keyed services | Multiple implementations of `IPayment` |
+| Legacy migration | Existing Autofac modules from .NET Framework |
+
+Many new ASP.NET Core apps stay on **built-in DI** unless Autofac features are clearly needed.
+
+### 22. Autofac in GymRoute
+
+**Package:** `Autofac.Extensions.DependencyInjection` 11.0.0
+
+**`Program.cs`:**
+
+```csharp
+builder.Host.UseServiceProviderFactory(new AutofacServiceProviderFactory());
+builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
+{
+    containerBuilder.RegisterModule<GymAutofacModule>();
+});
+
+// Framework stays on builder.Services
+builder.Services.AddDbContext<GymDbContext>(...);
+builder.Services.AddControllersWithViews();
+```
+
+**`GymAutofacModule.cs`** registers:
+
+- `AuditInterceptor` — `SingleInstance`
+- `GymDbContextAdapter` → `IGymDbContext` — `InstancePerLifetimeScope`
+- Assembly scan: `*Service` in BusinessLogic → `AsImplementedInterfaces()`
+- `MemberService`, DI lifetime demo types
+
+| Built-in DI | Autofac |
+|-------------|---------|
+| `AddSingleton<T>()` | `.SingleInstance()` |
+| `AddScoped<T>()` | `.InstancePerLifetimeScope()` |
+| `AddTransient<T>()` | `.InstancePerDependency()` |
+
+---
+
+## 6. Exception Handling in ASP.NET Core MVC
+
+### 23–24. Global exception handling with `IExceptionHandler`
+
+ASP.NET Core 8+ supports **`IExceptionHandler`** for centralized exception handling. Register the handler and call **`UseExceptionHandler()`** (no path required).
+
+**`Program.cs`:**
+
+```csharp
+builder.Services.AddMemoryCache();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
+// ...
+app.UseExceptionHandler();
+```
+
+**`GlobalExceptionHandler`** (`Infrastructure/ExceptionHandling/GlobalExceptionHandler.cs`):
+
+- Logs the exception with trace ID and path
+- Maps `GymNotFoundException` → 404, others → 500
+- In Development, caches `ErrorViewModel` details in `IMemoryCache` (survives redirect)
+- **Redirects** the browser to `/Home/Error?requestId={traceId}`
+
+### 25. Common `Error.cshtml`
+
+Shared view: **`Views/Shared/Error.cshtml`**  
+Model: **`ErrorViewModel`** (status code, title, message, request ID, optional dev details)
+
+### 26–27. Integration and redirect flow
+
+```
+User request → exception in controller/service
+    → GlobalExceptionHandler.TryHandleAsync()
+    → Log + redirect to /Home/Error?requestId=...
+    → HomeController.Error() loads model (from cache in Dev)
+    → Views/Shared/Error.cshtml
+```
+
+**Demo actions** on `HomeController`:
+
+| Action | URL | Result |
+|--------|-----|--------|
+| `ThrowTest` | `/Home/ThrowTest` | 500 + redirect to error page |
+| `ThrowNotFound` | `/Home/ThrowNotFound` | 404 + redirect to error page |
+| `Error` | `/Home/Error` | Renders `Error.cshtml` directly |
+
+Any unhandled exception in the app (e.g. in `PlansController`) follows the same path.
+
+---
+
+## 7. Background Jobs
+
+### 28–30. Soft-delete purge job (every 30 days)
+
+Permanently **hard-deletes** all rows where `IsDeleted = true`, using **`BackgroundService`** (built into ASP.NET Core).
+
+**Flow:**
+
+```
+SoftDeletedRecordsPurgeBackgroundService (every 30 days)
+    → ISoftDeletedRecordsPurgeService.PurgeAsync()
+    → GymDbContext.IgnoreQueryFilters() + RemoveRange + SaveChanges
+```
+
+**Purge order** (FK-safe): Bookings → MemberShips → Sessions → Users → HealthRecords → Plans → Categories.
+
+**Configuration** (`appsettings.json`):
+
+```json
+"SoftDeletePurge": {
+  "Enabled": true,
+  "IntervalDays": 30,
+  "RunOnStartup": false
+}
+```
+
+Development sets `"RunOnStartup": true` so you can verify the job in logs when the app starts.
+
+**Files:**
+
+| File | Role |
+|------|------|
+| `BackgroundJobs/SoftDeletedRecordsPurgeBackgroundService.cs` | `BackgroundService` + `PeriodicTimer` |
+| `DataAccess/Services/SoftDeletedRecordsPurgeService.cs` | EF purge logic |
+| `Program.cs` | `AddHostedService`, `Configure<SoftDeletePurgeOptions>` |
+
+### 32. BackgroundService vs Hangfire vs Quartz.NET
+
+| | **BackgroundService** | **Hangfire** | **Quartz.NET** |
+|---|----------------------|--------------|----------------|
+| **Shipped with ASP.NET Core** | Yes | No (NuGet + storage) | No (NuGet) |
+| **Setup** | Minimal | SQL/Redis storage, dashboard | Scheduler config, jobs |
+| **Scheduling** | Manual (`PeriodicTimer`, `Task.Delay`) | Cron expressions, delayed/recurring jobs | Rich cron, calendars, clustering |
+| **Persistence** | None (lost if app restarts mid-job) | Jobs stored in DB | Can use ADO job store |
+| **Dashboard** | No | Yes (web UI) | Third-party / custom |
+| **Best for** | Simple periodic tasks in one app instance | Recurring jobs, retries, admin UI | Complex schedules, many triggers |
+| **GymRoute choice** | Used for 30-day purge | — | — |
+
+**When to upgrade:** Use **Hangfire** if you need a dashboard, retries, or durable jobs across restarts. Use **Quartz.NET** for advanced cron (e.g. “last Friday of month”) or clustered schedulers.
+
+---
+
+## 8. Logging
+
+### 33. Logging in ASP.NET Core (research)
+
+ASP.NET Core uses **`Microsoft.Extensions.Logging`** (`ILogger<T>`). Log levels: Trace, Debug, Information, Warning, Error, Critical.
+
+| Concept | Description |
+|---------|-------------|
+| `ILogger<T>` | Category = type name; inject in controllers/services |
+| Providers | Console, Debug, EventSource, **third-party (Serilog)** |
+| Structured logging | Named placeholders: `{PlanId}` not string concat |
+| `appsettings.json` | `Logging:LogLevel` for built-in provider |
+
+**Serilog** replaces/enhances the default provider with richer sinks (Console, File, **Seq**) and structured properties.
+
+### 34. `ILogger` in GymRoute
+
+| Location | What is logged |
+|----------|----------------|
+| `PlansController` | Plan list/details requested |
+| `PlanService` | Active plans count, create, soft-delete, not found |
+| `GlobalExceptionHandler` | Unhandled exceptions (structured) |
+| `SoftDeletedRecordsPurgeService` | Business purge operations |
+| `SoftDeletedRecordsPurgeBackgroundService` | Job start/finish/failure |
+
+### 35–37. Serilog + Seq
+
+**Packages:** `Serilog.AspNetCore`, `Serilog.Sinks.Seq`
+
+**`Program.cs`:** bootstrap logger, `builder.Host.UseSerilog()`, `Log.CloseAndFlush()` on shutdown.
+
+**`appsettings.json`:**
+
+```json
+"Serilog": {
+  "WriteTo": [
+    { "Name": "Console" },
+    { "Name": "Seq", "Args": { "serverUrl": "http://localhost:5341" } }
+  ]
+}
+```
+
+**Start Seq (Docker):**
+
+```bash
+docker compose -f docker-compose.seq.yml up -d
+```
+
+Open **http://localhost:5341** to search logs.
+
+### 38. What gets logged
+
+| Category | Mechanism | Example |
+|----------|-----------|---------|
+| **Requests** | `UseGymRouteRequestLogging()` (Serilog request logging) | `HTTP GET /Plans responded 200 in 45 ms` |
+| **Exceptions** | `GlobalExceptionHandler` + `ILogger.LogError` | Status, TraceId, Method, Path, Query |
+| **Business operations** | `ILogger` in `PlanService`, purge service | `Plan created. PlanId=1 Name=...` |
+
+Request enrichment: `RequestId`, `RequestHost`, `UserAgent`.
+
+---
+
+## Key files reference
+
+| Topic | Path |
+|-------|------|
+| Startup + Autofac | `GymRoute.Presentation/Program.cs` |
+| Autofac module | `GymRoute.Presentation/DependencyInjection/GymAutofacModule.cs` |
+| DbContext | `GymRoute.DataAccess/Data/Contexts/GymDbContext.cs` |
+| DbContext abstraction | `GymRoute.BusinessLogic/Interfaces/IGymDbContext.cs` |
+| Adapter | `GymRoute.BusinessLogic/GymDbContextAdapter.cs` |
+| Plan service | `GymRoute.BusinessLogic/Services/PlanService.cs` |
+| Audit interceptor | `GymRoute.DataAccess/Interceptors/AuditInterceptor.cs` |
+| DI lifetime demo | `GymRoute.Presentation/Diagnostics/DependencyInjection/` |
+| DI lifetime UI | `GymRoute.Presentation/Controllers/DiLifetimeController.cs` |
+| Global exception handler | `GymRoute.Presentation/Infrastructure/ExceptionHandling/GlobalExceptionHandler.cs` |
+| Error view | `GymRoute.Presentation/Views/Shared/Error.cshtml` |
+| Soft-delete purge job | `GymRoute.Presentation/BackgroundJobs/SoftDeletedRecordsPurgeBackgroundService.cs` |
+| Purge service | `GymRoute.DataAccess/Services/SoftDeletedRecordsPurgeService.cs` |
+| Serilog request logging | `GymRoute.Presentation/Infrastructure/Logging/SerilogRequestLoggingExtensions.cs` |
+| Seq Docker compose | `docker-compose.seq.yml` |

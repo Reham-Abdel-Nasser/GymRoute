@@ -1,39 +1,31 @@
-﻿using GymRoute.DataAccess.Repositories;
+﻿using GymRoute.BusinessLogic.Interfaces;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace GymRoute.Presentation.Controllers;
 
-public class PlansController([FromKeyedServices("Plan")] IPlanRepository planRepo) : Controller
+public class PlansController(
+    IPlanService planService,
+    ILogger<PlansController> logger) : Controller
 {
-    private readonly IPlanRepository _planRepo = planRepo;
-
     public async Task<IActionResult> Index()
     {
-        var plans = await _planRepo.GetAllAsync();
+        logger.LogInformation("Plans list requested");
+        var plans = await planService.GetActivePlansAsync();
         return View(plans);
     }
 
     public async Task<IActionResult> Details(int id)
     {
-        if(id <= 0)
-        {
+        logger.LogInformation("Plan details requested. PlanId={PlanId}", id);
+
+        if (id <= 0)
             return NotFound();
-        }
 
-        var plan = await _planRepo.GetByIdAsync(id);
+        var plan = await planService.GetByIdAsync(id);
 
-        if(plan is null)
-        {
-            return RedirectToAction(nameof(Index));  // return 302, location
-        }
+        if (plan is null)
+            return RedirectToAction(nameof(Index));
 
-        return View(plan);  // Views/Plans/Details.cshtml
+        return View(plan);
     }
 }
-
-// OCP : Open for extensions but closed for modifications
-// DIP : High level modules should not depends on low level modules, both depends "Abstractions"
-
-// High level: Order Service
-// Low level: InstaPay (astraction)
